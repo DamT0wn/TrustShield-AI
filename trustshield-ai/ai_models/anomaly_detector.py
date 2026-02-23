@@ -13,7 +13,13 @@ model = IsolationForest(contamination=0.2)
 model.fit(transactions)
 
 def detect_anomaly(transaction):
-
-    pred = model.predict([transaction])
+    # Ensure transaction is 2D array with shape (n_samples, 3)
+    if isinstance(transaction, list):
+        transaction = np.array([transaction])
+    elif isinstance(transaction, np.ndarray):
+        if transaction.ndim == 1:
+            transaction = transaction.reshape(1, -1)
+    
+    pred = model.predict(transaction)
 
     return int(pred[0])
