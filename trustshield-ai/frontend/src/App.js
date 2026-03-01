@@ -4,6 +4,7 @@ import axios from "axios";
 import TranscriptBox from "./components/TranscriptBox";
 import RiskGauge from "./components/RiskGauge";
 import AlertPanel from "./components/AlertPanel";
+import AudioUpload from "./components/AudioUpload";
 
 import "./App.css";
 
@@ -26,6 +27,14 @@ function App() {
   const [analysisStage, setAnalysisStage] = useState("idle");
   const [apiStatus, setApiStatus] = useState("checking");
   const [analysisCount, setAnalysisCount] = useState(0);
+  
+  // New state for enhancements
+  const [darkMode, setDarkMode] = useState(false);
+  const [callDuration, setCallDuration] = useState(0);
+  const [confidenceThreshold, setConfidenceThreshold] = useState(70);
+  const [callHistory, setCallHistory] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [currentCallId, setCurrentCallId] = useState(null);
 
   // ---------------- REFS ----------------
 
@@ -193,6 +202,48 @@ function App() {
     runFraudAnalysis(scenario);
   }, [runFraudAnalysis]);
 
+  // ---------------- HANDLE AUDIO UPLOAD RESULTS ----------------
+
+  const handleAudioUploadComplete = useCallback(async (data) => {
+    setIsLoading(true);
+    setAnalysisStage("complete");
+    
+    try {
+      // Display results from uploaded audio analysis
+      setTranscript(data.transcript || "No transcript available");
+      
+      // Animate score increase
+      const targetScore = data.final_risk?.risk_score || 0;
+      let currentScore = 0;
+      const scoreInterval = setInterval(() => {
+        currentScore += targetScore / 20;
+        if (currentScore >= targetScore) {
+          currentScore = targetScore;
+          clearInterval(scoreInterval);
+        }
+        setFraudScore(currentScore);
+      }, 30);
+
+      setRiskLevel(data.final_risk?.risk_level || "Low");
+      setAlerts(data.final_risk?.alerts || ["No alerts"]);
+      setConfidence(data.voice_analysis?.confidence || 0);
+      setAnalysisCount(prev => prev + 1);
+      
+      // Show file info if available
+      if (data.file_info) {
+        setAlerts(prev => [
+          `📁 Analyzed: ${data.file_info.filename} (${(data.file_info.size / 1024).toFixed(1)} KB)`,
+          ...prev
+        ]);
+      }
+    } catch (error) {
+      console.error("Error processing upload results:", error);
+      setAlerts(["❌ Error processing analysis results"]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
   // ---------------- RESET ANALYSIS ----------------
 
   const resetAnalysis = useCallback(() => {
@@ -279,6 +330,13 @@ function App() {
           ))}
         </div>
       </section>
+
+      {/* Audio Upload Section */}
+      <AudioUpload 
+        onAnalysisComplete={handleAudioUploadComplete}
+        apiUrl={API_URL}
+        disabled={isLoading || apiStatus === "offline"}
+      />
 
       {/* Analysis Progress Indicator */}
       {isLoading && (

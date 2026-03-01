@@ -1,8 +1,11 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 import random
+import os
+import shutil
+from pathlib import Path
 
 from ai_models.call_analyzer import analyzer
 
@@ -16,6 +19,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Create uploads directory if it doesn't exist
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+# Allowed audio file extensions
+ALLOWED_EXTENSIONS = {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"}
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 
 # Request models
 class AnalyzeCallRequest(BaseModel):
@@ -46,7 +57,8 @@ def root():
             "/transaction-risk", 
             "/final-risk",
             "/full-analysis",
-            "/demo-scenarios"
+            "/demo-scenarios",
+            "/upload-audio"
         ]
     }
 
@@ -65,6 +77,96 @@ def get_demo_scenarios():
         }
     }
 
+@app.post("/upload-audio")
+async def upload_audio(file: UploadFile = File(...)):
+    """
+    Upload and analyze audio file.
+    Supports: mp3, wav, ogg, m4a, flac, aac
+    Max size: 50MB
+    """
+    try:
+        # Validate file extension
+        file_ext = Path(file.filename).suffix.lower()
+        if file_ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+            )
+        
+        # Read file content
+        contents = await file.read()
+        file_size = len(contents)
+        
+        # Validate file size
+        if file_size > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large. Max size: {MAX_FILE_SIZE / (1024*1024)}MB"
+            )
+        
+        if file_size == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Empty file uploaded"
+            )
+        
+        # Generate unique filename
+        import time
+        timestamp = int(time.time())
+        safe_filename = f"{timestamp}_{file.filename}"
+        file_path = UPLOAD_DIR / safe_filename
+        
+        # Save file
+        with open(file_path, "wb") as f:
+            f.write(contents)
+        
+        # Analyze the audio file
+        try:
+            result = analyzer.run_full_analysis(
+                audio_path=str(file_path),
+                transaction_data=None
+            )
+            
+            # Add file info to result
+            result["file_info"] = {
+                "filename": file.filename,
+                "size": file_size,
+                "format": file_ext,
+                "saved_as": safe_filename
+            }
+            
+            return result
+            
+        except Exception as e:
+            # If analysis fails, clean up file and raise error
+            if file_path.exists():
+                file_path.unlink()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Audio analysis failed: {str(e)}"
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Upload failed: {str(e)}"
+        )
+
+@app.delete("/upload-audio/{filename}")
+async def delete_uploaded_audio(filename: str):
+    """Delete uploaded audio file."""
+    try:
+        file_path = UPLOAD_DIR / filename
+        if file_path.exists():
+            file_path.unlink()
+            return {"status": "deleted", "filename": filename}
+        else:
+            raise HTTPException(status_code=404, detail="File not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/analyze-call")
 def analyze_call(request: AnalyzeCallRequest = None):
     """
@@ -72,11 +174,9 @@ def analyze_call(request: AnalyzeCallRequest = None):
     Supports demo scenarios for reliable testing.
     """
     try:
-        # Handle both request body and no body (backward compatibility)
         if request is None:
             request = AnalyzeCallRequest()
         
-        # Use demo scenario if specified
         if request.demo_scenario:
             scenario = analyzer.demo_scenarios.get(request.demo_scenario)
             if scenario:
@@ -86,11 +186,9 @@ def analyze_call(request: AnalyzeCallRequest = None):
         else:
             transcript = request.transcript
         
-        # Analyze transcript
         if transcript:
             result = analyzer.analyze_transcript(transcript)
         else:
-            # Use audio file or default demo
             transcript, confidence = analyzer.analyze_audio_file(request.audio_path)
             result = analyzer.analyze_transcript(transcript)
             result["audio_confidence"] = confidence
@@ -125,7 +223,6 @@ def final_risk():
     Uses sample data for demonstration.
     """
     try:
-        # Use sample data
         voice_analysis = {
             "fraud_probability": 0.85,
             "confidence": 0.90,
@@ -153,7 +250,6 @@ def full_analysis(request: FullAnalysisRequest = None):
     """
     try:
         if request is None:
-            # Use random demo scenario for testing
             scenarios = list(analyzer.demo_scenarios.keys())
             demo_scenario = random.choice(scenarios)
             request = FullAnalysisRequest(demo_scenario=demo_scenario)
