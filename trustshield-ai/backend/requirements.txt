@@ -5,3 +5,5 @@ scikit-learn
 numpy
 openai-whisper
 torch
+pydantic
+python-multipart
